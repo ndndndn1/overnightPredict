@@ -209,11 +209,14 @@ src/
 
 ## OODA Loop Flow
 
+The OODA loop is implemented in `SessionManager.process_question()` with full traceability:
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        OBSERVE                               │
 │  - Receive actual question from user                        │
 │  - Check pending predictions for matches                    │
+│  - Returns: matched_prediction or None                      │
 └────────────────────────┬────────────────────────────────────┘
                          │
                          ▼
@@ -221,24 +224,38 @@ src/
 │                        ORIENT                                │
 │  - Evaluate prediction accuracy (semantic similarity)        │
 │  - Update context with new information                       │
-│  - Track accuracy metrics                                    │
+│  - Track accuracy metrics via MetaTuner                     │
 └────────────────────────┬────────────────────────────────────┘
                          │
                          ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                        DECIDE                                │
 │  - Use predicted answer if accuracy >= threshold            │
-│  - Or execute fresh with LLM                                │
-│  - Determine if strategy change needed                      │
+│  - Or execute fresh with LLM via Executor                   │
+│  - Track: used_prediction, prediction_id, prediction_accuracy│
 └────────────────────────┬────────────────────────────────────┘
                          │
                          ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                         ACT                                  │
-│  - Return answer to user                                    │
-│  - Generate new predictions (lookahead)                     │
-│  - Apply strategy adjustments if needed                     │
+│  - Return QuestionProcessingResult with full metadata       │
+│  - Generate new predictions via Forecaster (lookahead)      │
+│  - Apply strategy adjustments via MetaTuner if needed       │
 └─────────────────────────────────────────────────────────────┘
+```
+
+### QuestionProcessingResult
+
+Each question processing returns detailed metadata:
+
+```python
+@dataclass
+class QuestionProcessingResult:
+    question_id: str           # Unique identifier for the question
+    answer: str                # The generated or predicted answer
+    used_prediction: bool      # Whether a prediction was used
+    prediction_id: str | None  # ID of matched prediction (if used)
+    prediction_accuracy: float | None  # Similarity score (if matched)
 ```
 
 ## Context Sharing

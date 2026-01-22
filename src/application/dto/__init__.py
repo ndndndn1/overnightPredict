@@ -53,6 +53,7 @@ class QuestionResultDTO:
     answer: str
     processing_time: float
     used_prediction: bool
+    prediction_id: Optional[str] = None
     prediction_accuracy: Optional[float] = None
 
 

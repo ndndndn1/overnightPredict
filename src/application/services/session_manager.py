@@ -6,8 +6,30 @@ for a single session.
 """
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
+
+
+@dataclass
+class QuestionProcessingResult:
+    """Result of processing a question through the OODA loop."""
+
+    question_id: str
+    answer: str
+    used_prediction: bool = False
+    prediction_id: Optional[str] = None
+    prediction_accuracy: Optional[float] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "question_id": self.question_id,
+            "answer": self.answer,
+            "used_prediction": self.used_prediction,
+            "prediction_id": self.prediction_id,
+            "prediction_accuracy": self.prediction_accuracy,
+        }
 
 from src.core.utils.logging import get_logger
 from src.domain.entities.session import Session, SessionStatus
@@ -154,14 +176,14 @@ class SessionManager:
             await self._repository.save_session(self._session)
             self._logger.info("Session resumed")
 
-    async def process_question(self, question: Question) -> str:
+    async def process_question(self, question: Question) -> "QuestionProcessingResult":
         """Process a single question through the OODA loop.
 
         Args:
             question: Question to process.
 
         Returns:
-            Answer string.
+            QuestionProcessingResult with answer and metadata.
         """
         self._logger.info(
             "Processing question",
@@ -176,8 +198,15 @@ class SessionManager:
         await self._update_context(question)
 
         # 3. DECIDE: Use prediction or execute fresh
+        used_prediction = False
+        prediction_id = None
+        prediction_accuracy = None
+
         if matched_prediction and matched_prediction.predicted_answer:
             answer = matched_prediction.predicted_answer
+            used_prediction = True
+            prediction_id = matched_prediction.id
+            prediction_accuracy = matched_prediction.similarity_score
             self._logger.info("Using predicted answer", prediction_id=matched_prediction.id)
         else:
             # Execute fresh
@@ -191,7 +220,13 @@ class SessionManager:
         # Generate new predictions
         await self._forecast_next()
 
-        return answer
+        return QuestionProcessingResult(
+            question_id=question.id,
+            answer=answer,
+            used_prediction=used_prediction,
+            prediction_id=prediction_id,
+            prediction_accuracy=prediction_accuracy,
+        )
 
     async def add_context(self, content: str, context_type: ContextType) -> None:
         """Add context to the session.

@@ -22,7 +22,7 @@ from src.domain.interfaces.session_repository import ISessionRepository
 from src.domain.interfaces.event_bus import IEventBus
 from src.domain.interfaces.context_store import IContextStore, IContextSynchronizer
 from src.domain.value_objects.context import Context, ContextType, SharedContext
-from src.application.services.session_manager import SessionManager
+from src.application.services.session_manager import SessionManager, QuestionProcessingResult
 from src.application.services.forecaster import Forecaster, LLMPredictionStrategy
 from src.application.services.evaluator import Evaluator
 from src.application.services.meta_tuner import MetaTuner
@@ -287,7 +287,7 @@ class Orchestrator:
         session_id: str,
         content: str,
         question_type: QuestionType = QuestionType.OTHER,
-    ) -> str:
+    ) -> QuestionProcessingResult:
         """Process a question in a specific session.
 
         Args:
@@ -296,7 +296,7 @@ class Orchestrator:
             question_type: Type of question.
 
         Returns:
-            Answer string.
+            QuestionProcessingResult with answer and metadata.
         """
         manager = self._sessions.get(session_id)
         if not manager:

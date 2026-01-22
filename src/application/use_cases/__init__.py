@@ -92,7 +92,7 @@ class ProcessQuestionUseCase:
 
         start = time.time()
 
-        answer = await self._orchestrator.process_question(
+        result = await self._orchestrator.process_question(
             dto.session_id,
             dto.content,
             type_map.get(dto.question_type, QuestionType.OTHER),
@@ -101,9 +101,11 @@ class ProcessQuestionUseCase:
         processing_time = time.time() - start
 
         return QuestionResultDTO(
-            question_id="",  # Would be returned from orchestrator
+            question_id=result.question_id,
             session_id=dto.session_id,
-            answer=answer,
+            answer=result.answer,
             processing_time=processing_time,
-            used_prediction=False,  # Would be tracked
+            used_prediction=result.used_prediction,
+            prediction_id=result.prediction_id,
+            prediction_accuracy=result.prediction_accuracy,
         )
