@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 import structlog
@@ -194,7 +194,7 @@ class OvernightEngine:
         finally:
             if session.status == SessionStatus.RUNNING:
                 session.status = SessionStatus.COMPLETED
-                session.completed_at = datetime.utcnow()
+                session.completed_at = datetime.now(timezone.utc)
 
     async def _run_session_loop(self, session: SessionState) -> None:
         """

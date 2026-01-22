@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+def utcnow() -> datetime:
+    """Return current UTC time as timezone-aware datetime."""
+    return datetime.now(timezone.utc)
 
 
 class QuestionType(str, Enum):
@@ -45,16 +50,15 @@ class SessionStatus(str, Enum):
 class Question(BaseModel):
     """Represents a question in the system."""
 
+    model_config = ConfigDict(use_enum_values=True)
+
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     content: str
     question_type: QuestionType
     context: dict[str, Any] = Field(default_factory=dict)
     parent_question_id: str | None = None
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=utcnow)
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-    class Config:
-        use_enum_values = True
 
 
 class Answer(BaseModel):
@@ -66,7 +70,7 @@ class Answer(BaseModel):
     code_snippets: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0, default=0.8)
     derived_questions: list[str] = Field(default_factory=list)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=utcnow)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -80,7 +84,7 @@ class Prediction(BaseModel):
     strategy_used: PredictionStrategy
     context_snapshot: dict[str, Any] = Field(default_factory=dict)
     predicted_answer: str | None = None
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=utcnow)
 
 
 class PredictionResult(BaseModel):
@@ -92,7 +96,7 @@ class PredictionResult(BaseModel):
     is_accurate: bool
     strategy_used: PredictionStrategy
     feedback: str = ""
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=utcnow)
 
 
 class AccuracyMetrics(BaseModel):
@@ -105,7 +109,7 @@ class AccuracyMetrics(BaseModel):
     accuracy_rate: float = Field(ge=0.0, le=1.0, default=0.0)
     average_similarity: float = Field(ge=0.0, le=1.0, default=0.0)
     strategy_adjustments: int = 0
-    last_updated: datetime = Field(default_factory=datetime.utcnow)
+    last_updated: datetime = Field(default_factory=utcnow)
 
     def update_accuracy(self, is_accurate: bool, similarity: float) -> None:
         """Update accuracy metrics with new prediction result."""
@@ -116,7 +120,7 @@ class AccuracyMetrics(BaseModel):
         # Moving average for similarity
         n = self.total_predictions
         self.average_similarity = ((n - 1) * self.average_similarity + similarity) / n
-        self.last_updated = datetime.utcnow()
+        self.last_updated = utcnow()
 
 
 class StrategyConfig(BaseModel):
@@ -149,11 +153,13 @@ class CodeArtifact(BaseModel):
     is_valid: bool = True
     lint_errors: list[str] = Field(default_factory=list)
     test_results: dict[str, Any] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=utcnow)
 
 
 class SessionState(BaseModel):
     """State of a coding session."""
+
+    model_config = ConfigDict(use_enum_values=True)
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     topic: str
@@ -176,25 +182,22 @@ class SessionState(BaseModel):
     artifacts: list[CodeArtifact] = Field(default_factory=list)
 
     # Timing
-    started_at: datetime = Field(default_factory=datetime.utcnow)
-    last_activity: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=utcnow)
+    last_activity: datetime = Field(default_factory=utcnow)
     completed_at: datetime | None = None
 
     # Checkpointing
     checkpoint_version: int = 0
 
-    class Config:
-        use_enum_values = True
-
     def add_question(self, question: Question) -> None:
         """Add a question to the session."""
         self.questions.append(question)
-        self.last_activity = datetime.utcnow()
+        self.last_activity = utcnow()
 
     def add_answer(self, answer: Answer) -> None:
         """Add an answer to the session."""
         self.answers.append(answer)
-        self.last_activity = datetime.utcnow()
+        self.last_activity = utcnow()
 
     def add_prediction(self, prediction: Prediction) -> None:
         """Add a prediction to pending predictions."""
@@ -203,7 +206,7 @@ class SessionState(BaseModel):
     def add_artifact(self, artifact: CodeArtifact) -> None:
         """Add a code artifact to the session."""
         self.artifacts.append(artifact)
-        self.last_activity = datetime.utcnow()
+        self.last_activity = utcnow()
 
 
 class ProjectContext(BaseModel):
@@ -229,4 +232,4 @@ class OrchestratorState(BaseModel):
     completed_sessions: list[str] = Field(default_factory=list)
     project_context: ProjectContext | None = None
     global_metrics: dict[str, Any] = Field(default_factory=dict)
-    started_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=utcnow)
