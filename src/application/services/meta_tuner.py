@@ -113,8 +113,8 @@ class MetaTuner:
             accuracy_window,
         )
 
-        # Apply decision
-        await self._apply_decision(session, decision)
+        # Apply decision with recent predictions for adaptation
+        await self._apply_decision(session, decision, recent_predictions)
 
         # Record decision
         self._decisions.append(decision)
@@ -259,8 +259,15 @@ class MetaTuner:
         self,
         session: Session,
         decision: TuningDecision,
+        recent_predictions: Optional[list[tuple[Prediction, float]]] = None,
     ) -> None:
-        """Apply a tuning decision."""
+        """Apply a tuning decision.
+
+        Args:
+            session: Current session.
+            decision: The tuning decision to apply.
+            recent_predictions: Recent (prediction, accuracy_score) pairs for adaptation.
+        """
         if decision.action == "keep":
             return
 
@@ -288,9 +295,25 @@ class MetaTuner:
         elif decision.action == "adapt":
             strategy = self._strategies.get(decision.current_strategy)
             if strategy and isinstance(strategy, IAdaptiveStrategy):
-                # Get recent predictions for adaptation
-                # In real implementation, this would get actual feedback
-                await strategy.adapt([])
+                # Pass actual feedback to the strategy for adaptation
+                feedback = recent_predictions or []
+
+                # Log adaptation details
+                if feedback:
+                    avg_accuracy = sum(score for _, score in feedback) / len(feedback)
+                    self._logger.debug(
+                        "Adapting strategy with feedback",
+                        session_id=session.id,
+                        strategy=decision.current_strategy,
+                        feedback_count=len(feedback),
+                        avg_accuracy=f"{avg_accuracy:.1%}",
+                    )
+
+                await strategy.adapt(feedback)
+
+                # Record parameters changed if strategy exposes them
+                if hasattr(strategy, "get_parameters"):
+                    decision.parameters_changed = strategy.get_parameters()
 
                 self._performance[decision.current_strategy].record_adaptation()
 
@@ -298,6 +321,8 @@ class MetaTuner:
                     "Strategy adapted",
                     session_id=session.id,
                     strategy=decision.current_strategy,
+                    feedback_count=len(feedback),
+                    new_params=decision.parameters_changed,
                 )
 
     def get_strategy_rankings(self) -> list[tuple[str, float]]:

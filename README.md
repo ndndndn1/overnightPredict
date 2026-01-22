@@ -25,10 +25,31 @@ An enterprise-grade system that implements meta-cognition capabilities to evalua
 | **Evaluator** | Critic | Measures semantic similarity between predicted and actual questions |
 | **MetaTuner** | Optimizer | Adjusts strategies when accuracy drops |
 
+### Intelligent Strategy Selection
+
+The Forecaster now implements context-aware strategy selection:
+
+| Context Type | Detection Keywords | Description |
+|--------------|-------------------|-------------|
+| `error_debugging` | Error context present | Prioritizes strategies for debugging scenarios |
+| `testing` | test, unittest, pytest, spec | Optimized for test-related predictions |
+| `api_development` | api, endpoint, route, request, response | API-focused strategy selection |
+| `refactoring` | refactor, optimize, clean, improve | Code improvement scenarios |
+| `bug_fixing` | bug, fix, error, issue, problem | Bug resolution predictions |
+| `feature_development` | feature, implement, add, create, build | New feature development |
+
+**Scoring Weights:**
+- **Accuracy (40%)**: Historical prediction accuracy
+- **Context-Specific (35%)**: Performance in similar context types
+- **Latency (15%)**: Response time optimization for large contexts
+- **Experience (10%)**: Reliability based on prediction volume
+
 ### Key Features
 
 - 📊 **Prediction Accuracy Tracking**: Semantic similarity-based evaluation
 - 🔄 **Auto-Strategy Switching**: Automatically changes strategies when performance degrades
+- 🧠 **Context-Aware Strategy Selection**: Intelligent strategy scoring based on context type (error debugging, testing, API development, refactoring, bug fixing, feature development)
+- 📈 **Performance-Based Scoring**: Weighted scoring system (accuracy 40%, context-specific 35%, latency 15%, experience 10%)
 - 🌐 **Context Sharing**: Share progress across sessions (file, cloud, Redis)
 - ⏱️ **Rate Limit Handling**: Automatic wait and retry for Claude Code limits
 - 📈 **Real-time Dashboard**: TUI dashboard for monitoring all sessions

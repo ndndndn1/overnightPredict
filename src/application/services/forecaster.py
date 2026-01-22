@@ -315,6 +315,48 @@ Format your response as a numbered list with each prediction on a new line:
         return predictions
 
 
+class StrategyPerformanceTracker:
+    """Tracks performance metrics for strategy selection."""
+
+    def __init__(self):
+        self.total_predictions: int = 0
+        self.successful_predictions: int = 0
+        self.total_latency_ms: float = 0.0
+        self.context_type_scores: dict[str, list[float]] = {}
+
+    @property
+    def accuracy(self) -> float:
+        """Calculate overall accuracy."""
+        if self.total_predictions == 0:
+            return 0.5  # Default for untested strategies
+        return self.successful_predictions / self.total_predictions
+
+    @property
+    def avg_latency_ms(self) -> float:
+        """Calculate average latency."""
+        if self.total_predictions == 0:
+            return 0.0
+        return self.total_latency_ms / self.total_predictions
+
+    def record(self, accuracy: float, latency_ms: float, context_type: str = "general") -> None:
+        """Record a prediction result."""
+        self.total_predictions += 1
+        if accuracy >= 0.5:
+            self.successful_predictions += 1
+        self.total_latency_ms += latency_ms
+
+        if context_type not in self.context_type_scores:
+            self.context_type_scores[context_type] = []
+        self.context_type_scores[context_type].append(accuracy)
+
+    def get_context_score(self, context_type: str) -> float:
+        """Get average score for a specific context type."""
+        scores = self.context_type_scores.get(context_type, [])
+        if not scores:
+            return 0.5  # Default
+        return sum(scores) / len(scores)
+
+
 class Forecaster:
     """
     Forecaster service managing prediction strategies.
@@ -338,6 +380,7 @@ class Forecaster:
         self._logger = get_logger("forecaster")
         self._strategies: dict[str, IPredictionStrategy] = {}
         self._default_strategy = default_strategy
+        self._performance_tracker: dict[str, StrategyPerformanceTracker] = {}
 
     def register_strategy(
         self,
@@ -351,6 +394,7 @@ class Forecaster:
             set_default: Set as default strategy.
         """
         self._strategies[strategy.name] = strategy
+        self._performance_tracker[strategy.name] = StrategyPerformanceTracker()
         if set_default or self._default_strategy is None:
             self._default_strategy = strategy
 
@@ -412,7 +456,13 @@ class Forecaster:
         self,
         context: PredictionContext,
     ) -> Optional[IPredictionStrategy]:
-        """Select the best strategy for the context."""
+        """Select the best strategy for the context.
+
+        Considers:
+        - Historical performance per strategy
+        - Context characteristics (type, length)
+        - Resource constraints (latency requirements)
+        """
         # Filter strategies that can handle the context
         candidates = [
             s for s in self._strategies.values()
@@ -422,12 +472,139 @@ class Forecaster:
         if not candidates:
             return self._default_strategy
 
-        # For now, just return first candidate
-        # In a full implementation, this would consider:
-        # - Historical performance per strategy
-        # - Context characteristics
-        # - Resource constraints
-        return candidates[0]
+        if len(candidates) == 1:
+            return candidates[0]
+
+        # Determine context characteristics
+        context_type = self._classify_context(context)
+        context_length = context.context_snapshot.total_length
+        requires_low_latency = context_length > 5000  # Large context = prefer faster strategy
+
+        # Score each candidate strategy
+        scored_candidates: list[tuple[IPredictionStrategy, float]] = []
+
+        for strategy in candidates:
+            score = self._calculate_strategy_score(
+                strategy,
+                context_type,
+                requires_low_latency,
+            )
+            scored_candidates.append((strategy, score))
+
+        # Sort by score (highest first)
+        scored_candidates.sort(key=lambda x: -x[1])
+
+        best_strategy = scored_candidates[0][0]
+
+        self._logger.debug(
+            "Strategy selected",
+            selected=best_strategy.name,
+            context_type=context_type,
+            scores={s.name: f"{score:.2f}" for s, score in scored_candidates},
+        )
+
+        return best_strategy
+
+    def _classify_context(self, context: PredictionContext) -> str:
+        """Classify the context type for strategy selection."""
+        # Analyze context to determine its type
+        context_str = context.context_snapshot.to_string().lower()
+
+        if context.error_context:
+            return "error_debugging"
+        elif any(kw in context_str for kw in ["test", "unittest", "pytest", "spec"]):
+            return "testing"
+        elif any(kw in context_str for kw in ["api", "endpoint", "route", "request", "response"]):
+            return "api_development"
+        elif any(kw in context_str for kw in ["refactor", "optimize", "clean", "improve"]):
+            return "refactoring"
+        elif any(kw in context_str for kw in ["bug", "fix", "error", "issue", "problem"]):
+            return "bug_fixing"
+        elif any(kw in context_str for kw in ["feature", "implement", "add", "create", "build"]):
+            return "feature_development"
+        else:
+            return "general"
+
+    def _calculate_strategy_score(
+        self,
+        strategy: IPredictionStrategy,
+        context_type: str,
+        requires_low_latency: bool,
+    ) -> float:
+        """Calculate a score for a strategy based on various factors."""
+        tracker = self._performance_tracker.get(strategy.name)
+        if not tracker:
+            return 0.5  # Default score for untracked strategies
+
+        # Base score from overall accuracy (weight: 40%)
+        accuracy_score = tracker.accuracy * 0.4
+
+        # Context-specific score (weight: 35%)
+        context_score = tracker.get_context_score(context_type) * 0.35
+
+        # Latency score (weight: 15%)
+        # Lower latency is better, normalize to 0-1 range (assuming max 5000ms)
+        if requires_low_latency and tracker.avg_latency_ms > 0:
+            latency_score = max(0, 1 - (tracker.avg_latency_ms / 5000)) * 0.15
+        else:
+            latency_score = 0.15  # Full score if latency doesn't matter or unknown
+
+        # Experience score - favor strategies with more data (weight: 10%)
+        # More predictions = more reliable performance data
+        experience_score = min(1.0, tracker.total_predictions / 50) * 0.1
+
+        total_score = accuracy_score + context_score + latency_score + experience_score
+
+        return total_score
+
+    def record_prediction_result(
+        self,
+        strategy_name: str,
+        accuracy: float,
+        latency_ms: float,
+        context_type: str = "general",
+    ) -> None:
+        """Record a prediction result for performance tracking.
+
+        Args:
+            strategy_name: Name of the strategy used.
+            accuracy: Accuracy score (0.0-1.0).
+            latency_ms: Prediction latency in milliseconds.
+            context_type: Type of context for context-specific tracking.
+        """
+        tracker = self._performance_tracker.get(strategy_name)
+        if tracker:
+            tracker.record(accuracy, latency_ms, context_type)
+            self._logger.debug(
+                "Prediction result recorded",
+                strategy=strategy_name,
+                accuracy=accuracy,
+                latency_ms=latency_ms,
+                context_type=context_type,
+            )
+
+    def get_strategy_performance(self, strategy_name: str) -> Optional[dict[str, Any]]:
+        """Get performance metrics for a strategy.
+
+        Args:
+            strategy_name: Name of the strategy.
+
+        Returns:
+            Dictionary with performance metrics or None.
+        """
+        tracker = self._performance_tracker.get(strategy_name)
+        if not tracker:
+            return None
+
+        return {
+            "accuracy": tracker.accuracy,
+            "total_predictions": tracker.total_predictions,
+            "avg_latency_ms": tracker.avg_latency_ms,
+            "context_scores": {
+                ctx: sum(scores) / len(scores) if scores else 0
+                for ctx, scores in tracker.context_type_scores.items()
+            },
+        }
 
     async def adapt_strategy(
         self,
