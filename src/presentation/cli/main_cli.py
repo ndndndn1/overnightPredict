@@ -19,7 +19,7 @@ from rich.table import Table
 from rich.live import Live
 from rich import print as rprint
 
-from src.core.config.settings import Settings, LLMProvider, get_settings
+from src.core.config.settings import Settings, LLMProvider, ClaudeAuthType, get_settings
 from src.core.utils.logging import setup_logging, get_logger
 
 
@@ -129,9 +129,59 @@ class CLI:
 
         # Claude/Anthropic
         if Confirm.ask("Configure Claude/Anthropic?", default=True):
-            api_key = Prompt.ask("Anthropic API Key", password=True)
-            config_lines.append(f"CLAUDE_API_KEY={api_key}")
             config_lines.append("CLAUDE_ENABLED=true")
+
+            # Select authentication type
+            console.print("\n[bold]Claude Authentication Options:[/bold]")
+            console.print("  [1] API Key - Standard Anthropic API key")
+            console.print("  [2] OAuth - Browser login (Claude Pro/Team subscription)")
+            console.print("  [3] Session Key - From browser cookies after login")
+
+            auth_choice = Prompt.ask(
+                "Select authentication method",
+                choices=["1", "2", "3"],
+                default="1",
+            )
+
+            if auth_choice == "1":
+                # API Key authentication
+                config_lines.append("CLAUDE_AUTH_TYPE=api_key")
+                api_key = Prompt.ask("Anthropic API Key", password=True)
+                config_lines.append(f"CLAUDE_API_KEY={api_key}")
+            elif auth_choice == "2":
+                # OAuth authentication
+                config_lines.append("CLAUDE_AUTH_TYPE=oauth")
+                callback_port = Prompt.ask(
+                    "OAuth callback port",
+                    default="8080",
+                )
+                config_lines.append(f"CLAUDE_OAUTH_CALLBACK_PORT={callback_port}")
+                console.print("[yellow]Note: Browser will open for login when Claude provider is used.[/yellow]")
+            elif auth_choice == "3":
+                # Session Key authentication
+                config_lines.append("CLAUDE_AUTH_TYPE=session_key")
+                console.print("\n[dim]To get your session key:[/dim]")
+                console.print("[dim]1. Open claude.ai in your browser and log in[/dim]")
+                console.print("[dim]2. Open Developer Tools (F12) > Application > Cookies[/dim]")
+                console.print("[dim]3. Find 'sessionKey' cookie and copy its value[/dim]")
+                session_key = Prompt.ask("Session Key", password=True)
+                config_lines.append(f"CLAUDE_SESSION_KEY={session_key}")
+
+            # Optional subscription info
+            if auth_choice in ["2", "3"]:
+                if Confirm.ask("Enter subscription details? (optional)", default=False):
+                    email = Prompt.ask("Account email", default="")
+                    if email:
+                        config_lines.append(f"CLAUDE_ACCOUNT_EMAIL={email}")
+                    sub_type = Prompt.ask(
+                        "Subscription type",
+                        choices=["free", "pro", "team", "enterprise"],
+                        default="pro",
+                    )
+                    config_lines.append(f"CLAUDE_SUBSCRIPTION_TYPE={sub_type}")
+                    daily_limit = Prompt.ask("Daily message limit (leave empty for auto)", default="")
+                    if daily_limit:
+                        config_lines.append(f"CLAUDE_DAILY_MESSAGE_LIMIT={daily_limit}")
 
         # Context sharing
         if Confirm.ask("Enable context sharing?", default=False):

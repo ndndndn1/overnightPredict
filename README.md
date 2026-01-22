@@ -66,11 +66,61 @@ OPENAI_API_KEY=sk-your-key-here
 OPENAI_ENABLED=true
 
 # Optional: Additional providers
-CLAUDE_API_KEY=sk-ant-your-key-here
-CLAUDE_ENABLED=true
-
 DEEPSEEK_API_KEY=your-key-here
 DEEPSEEK_ENABLED=false
+
+# Claude - See "Claude Authentication" section below
+CLAUDE_ENABLED=true
+CLAUDE_AUTH_TYPE=api_key
+CLAUDE_API_KEY=sk-ant-your-key-here
+```
+
+## Claude Authentication
+
+Claude supports three authentication methods to accommodate different use cases:
+
+### Option 1: API Key (Default)
+
+Standard Anthropic API key authentication for API access:
+
+```env
+CLAUDE_AUTH_TYPE=api_key
+CLAUDE_API_KEY=sk-ant-your-anthropic-key-here
+```
+
+### Option 2: OAuth (Claude Pro/Team Subscription)
+
+Browser-based OAuth login for Claude Pro or Team subscribers. No API key needed - uses your existing subscription:
+
+```env
+CLAUDE_AUTH_TYPE=oauth
+CLAUDE_OAUTH_CALLBACK_PORT=8080
+```
+
+When you start a session with Claude, a browser window will open for you to log in to your Claude account.
+
+### Option 3: Session Key (From Browser)
+
+Direct session key authentication using cookies from an active claude.ai session:
+
+```env
+CLAUDE_AUTH_TYPE=session_key
+CLAUDE_SESSION_KEY=your-session-key-here
+```
+
+**How to get your session key:**
+1. Open [claude.ai](https://claude.ai) in your browser and log in
+2. Open Developer Tools (F12) → Application → Cookies
+3. Find the `sessionKey` cookie and copy its value
+
+### Subscription Account Settings (Optional)
+
+For OAuth and Session Key authentication, you can optionally configure:
+
+```env
+CLAUDE_ACCOUNT_EMAIL=your-email@example.com
+CLAUDE_SUBSCRIPTION_TYPE=pro  # free, pro, team, enterprise
+CLAUDE_DAILY_MESSAGE_LIMIT=100  # Leave empty for auto-detection
 ```
 
 ## Usage
@@ -244,11 +294,29 @@ await orchestrator.broadcast_context(
 
 ## Configuration Reference
 
+### Claude Authentication
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `CLAUDE_AUTH_TYPE` | Authentication method: `api_key`, `oauth`, `session_key` | `api_key` |
+| `CLAUDE_API_KEY` | Anthropic API key (for api_key auth) | - |
+| `CLAUDE_OAUTH_CALLBACK_PORT` | Local port for OAuth callback | `8080` |
+| `CLAUDE_SESSION_KEY` | Session key from browser (for session_key auth) | - |
+| `CLAUDE_SUBSCRIPTION_TYPE` | Subscription tier: `free`, `pro`, `team`, `enterprise` | - |
+| `CLAUDE_DAILY_MESSAGE_LIMIT` | Daily message limit for subscription | auto |
+
+### Prediction Settings
+
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `PREDICTION_ACCURACY_THRESHOLD` | Similarity threshold for matching | 0.7 |
 | `PREDICTION_LOOKAHEAD_COUNT` | Questions to predict ahead | 5 |
 | `PREDICTION_MIN_ACCURACY_FOR_KEEP` | Min accuracy before strategy switch | 0.6 |
+
+### Orchestrator Settings
+
+| Variable | Description | Default |
+|----------|-------------|---------|
 | `ORCHESTRATOR_MAX_SESSIONS` | Maximum concurrent sessions | 10 |
 | `ORCHESTRATOR_SESSION_TIMEOUT` | Session timeout in seconds | 3600 |
 

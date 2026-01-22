@@ -22,6 +22,14 @@ class LLMProvider(str, Enum):
     ANTHROPIC = "anthropic"  # Alias for claude
 
 
+class ClaudeAuthType(str, Enum):
+    """Authentication types for Claude."""
+
+    API_KEY = "api_key"  # Anthropic API key
+    OAUTH = "oauth"  # OAuth browser login (Claude Pro/Team subscription)
+    SESSION_KEY = "session_key"  # Direct session key from browser
+
+
 class ContextSharingType(str, Enum):
     """Types of context sharing mechanisms."""
 
@@ -91,10 +99,51 @@ class ClaudeConfig(LLMProviderConfig):
     provider: LLMProvider = LLMProvider.CLAUDE
     model: str = "claude-3-opus-20240229"
 
-    # Claude Code specific settings
+    # Authentication type
+    auth_type: ClaudeAuthType = ClaudeAuthType.API_KEY
+
+    # API Key authentication (Anthropic API)
+    # api_key is inherited from LLMProviderConfig
+
+    # OAuth authentication (Claude Pro/Team subscription)
+    # Uses browser-based OAuth flow for authentication
+    oauth_callback_port: int = 8080  # Local port for OAuth callback
+
+    # Session Key authentication (from browser session)
+    # Extract from browser cookies after logging into claude.ai
+    session_key: Optional[SecretStr] = None
+
+    # Account information (for display purposes)
+    account_email: Optional[str] = None
+    subscription_type: Optional[str] = None  # "free", "pro", "team", "enterprise"
+
+    # Claude Code CLI specific settings
     cli_path: Optional[str] = None  # Path to claude-code CLI
+    use_cli: bool = False  # Use Claude Code CLI instead of API
+
+    # Rate limiting
     rate_limit_wait: bool = True  # Wait when rate limited
     rate_limit_check_interval: float = 60.0  # Seconds between rate limit checks
+
+    # Pro/Team subscription specific
+    daily_message_limit: Optional[int] = None  # None = unlimited (API), number for subscription
+    messages_used_today: int = 0
+
+    @property
+    def is_subscription_auth(self) -> bool:
+        """Check if using subscription-based authentication."""
+        return self.auth_type in (ClaudeAuthType.OAUTH, ClaudeAuthType.SESSION_KEY)
+
+    @property
+    def has_valid_credentials(self) -> bool:
+        """Check if valid credentials are configured."""
+        if self.auth_type == ClaudeAuthType.API_KEY:
+            return self.api_key is not None
+        elif self.auth_type == ClaudeAuthType.SESSION_KEY:
+            return self.session_key is not None
+        elif self.auth_type == ClaudeAuthType.OAUTH:
+            return True  # OAuth will prompt for login
+        return False
 
 
 class ContextSharingConfig(BaseSettings):

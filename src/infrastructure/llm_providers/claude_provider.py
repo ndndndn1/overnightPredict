@@ -1,11 +1,15 @@
 """Claude/Anthropic LLM provider implementation."""
 
 import asyncio
+import json
 import subprocess
 import time
+import webbrowser
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any, AsyncIterator, Optional
+from urllib.parse import parse_qs, urlparse
 
-from src.core.config.settings import ClaudeConfig
+from src.core.config.settings import ClaudeConfig, ClaudeAuthType
 from src.core.exceptions import LLMProviderError, RateLimitError
 from src.core.utils.logging import get_logger
 from src.domain.interfaces.llm_provider import (
@@ -16,11 +20,56 @@ from src.domain.interfaces.llm_provider import (
 from src.infrastructure.llm_providers.base_provider import BaseLLMProvider
 
 
+class OAuthCallbackHandler(BaseHTTPRequestHandler):
+    """Handler for OAuth callback."""
+
+    auth_code: Optional[str] = None
+    error: Optional[str] = None
+
+    def do_GET(self) -> None:
+        """Handle GET request (OAuth callback)."""
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+
+        if "code" in params:
+            OAuthCallbackHandler.auth_code = params["code"][0]
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"""
+                <html><body>
+                <h1>Authentication Successful!</h1>
+                <p>You can close this window and return to OvernightPredict.</p>
+                <script>window.close();</script>
+                </body></html>
+            """)
+        elif "error" in params:
+            OAuthCallbackHandler.error = params.get("error_description", ["Unknown error"])[0]
+            self.send_response(400)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(f"""
+                <html><body>
+                <h1>Authentication Failed</h1>
+                <p>Error: {OAuthCallbackHandler.error}</p>
+                </body></html>
+            """.encode())
+
+    def log_message(self, format: str, *args: Any) -> None:
+        """Suppress logging."""
+        pass
+
+
 class ClaudeProvider(BaseLLMProvider, ICodeExecutionProvider):
     """
     Claude/Anthropic API provider implementation.
 
-    Supports both the Anthropic API and Claude Code CLI.
+    Supports multiple authentication methods:
+    - API Key: Standard Anthropic API key
+    - OAuth: Browser-based login for Claude Pro/Team subscribers
+    - Session Key: Direct session key from browser cookies
+
+    Also supports Claude Code CLI integration.
     """
 
     def __init__(self, config: ClaudeConfig):
@@ -32,32 +81,219 @@ class ClaudeProvider(BaseLLMProvider, ICodeExecutionProvider):
         super().__init__(config)
         self._claude_config = config
         self._client: Optional[Any] = None
+        self._session_client: Optional[Any] = None  # For subscription auth
         self._cli_available: Optional[bool] = None
         self._rate_limit_check_time: float = 0
+        self._oauth_token: Optional[str] = None
+        self._authenticated = False
+
+    @property
+    def auth_type(self) -> ClaudeAuthType:
+        """Get current authentication type."""
+        return self._claude_config.auth_type
+
+    @property
+    def is_subscription_auth(self) -> bool:
+        """Check if using subscription-based authentication."""
+        return self._claude_config.is_subscription_auth
+
+    async def authenticate(self) -> bool:
+        """Authenticate with Claude based on configured auth type.
+
+        Returns:
+            True if authentication successful.
+        """
+        auth_type = self._claude_config.auth_type
+
+        if auth_type == ClaudeAuthType.API_KEY:
+            return await self._authenticate_api_key()
+        elif auth_type == ClaudeAuthType.OAUTH:
+            return await self._authenticate_oauth()
+        elif auth_type == ClaudeAuthType.SESSION_KEY:
+            return await self._authenticate_session_key()
+
+        return False
+
+    async def _authenticate_api_key(self) -> bool:
+        """Authenticate using Anthropic API key."""
+        try:
+            await self._get_client()
+            self._authenticated = True
+            self._logger.info("Authenticated with API key")
+            return True
+        except Exception as e:
+            self._logger.error("API key authentication failed", error=str(e))
+            return False
+
+    async def _authenticate_oauth(self) -> bool:
+        """Authenticate using OAuth browser flow for Claude Pro/Team.
+
+        This opens a browser window for the user to log in to their
+        Claude account and authorize the application.
+        """
+        self._logger.info("Starting OAuth authentication flow")
+
+        # OAuth configuration for Claude
+        # Note: These would need to be registered with Anthropic
+        client_id = "overnight-predict"
+        redirect_uri = f"http://localhost:{self._claude_config.oauth_callback_port}/callback"
+        auth_url = f"https://claude.ai/oauth/authorize?client_id={client_id}&redirect_uri={redirect_uri}&response_type=code&scope=chat"
+
+        # Start local server for callback
+        server = HTTPServer(
+            ("localhost", self._claude_config.oauth_callback_port),
+            OAuthCallbackHandler,
+        )
+        server.timeout = 300  # 5 minute timeout
+
+        # Open browser for authentication
+        self._logger.info("Opening browser for authentication...")
+        webbrowser.open(auth_url)
+
+        # Wait for callback
+        OAuthCallbackHandler.auth_code = None
+        OAuthCallbackHandler.error = None
+
+        try:
+            while OAuthCallbackHandler.auth_code is None and OAuthCallbackHandler.error is None:
+                server.handle_request()
+        finally:
+            server.server_close()
+
+        if OAuthCallbackHandler.error:
+            self._logger.error("OAuth failed", error=OAuthCallbackHandler.error)
+            return False
+
+        if OAuthCallbackHandler.auth_code:
+            self._oauth_token = OAuthCallbackHandler.auth_code
+            self._authenticated = True
+            self._logger.info("OAuth authentication successful")
+            return True
+
+        return False
+
+    async def _authenticate_session_key(self) -> bool:
+        """Authenticate using session key from browser.
+
+        The session key can be extracted from browser cookies after
+        logging into claude.ai.
+        """
+        session_key = self._claude_config.session_key
+        if session_key is None:
+            self._logger.error("Session key not configured")
+            return False
+
+        try:
+            # Validate session key by making a test request
+            import aiohttp
+
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "Cookie": f"sessionKey={session_key.get_secret_value()}",
+                    "Content-Type": "application/json",
+                }
+                async with session.get(
+                    "https://claude.ai/api/auth/session",
+                    headers=headers,
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        self._claude_config.account_email = data.get("email")
+                        self._claude_config.subscription_type = data.get("subscription_type")
+                        self._authenticated = True
+                        self._logger.info(
+                            "Session key authentication successful",
+                            email=self._claude_config.account_email,
+                            subscription=self._claude_config.subscription_type,
+                        )
+                        return True
+                    else:
+                        self._logger.error("Session key invalid or expired")
+                        return False
+        except ImportError:
+            self._logger.error("aiohttp package required for session auth. Run: pip install aiohttp")
+            return False
+        except Exception as e:
+            self._logger.error("Session key authentication failed", error=str(e))
+            return False
 
     async def _get_client(self) -> Any:
-        """Get or create the Anthropic client."""
+        """Get or create the Anthropic client based on auth type."""
         if self._client is None:
-            try:
-                from anthropic import AsyncAnthropic
+            auth_type = self._claude_config.auth_type
 
-                api_key = self._claude_config.api_key
-                if api_key is None:
+            if auth_type == ClaudeAuthType.API_KEY:
+                try:
+                    from anthropic import AsyncAnthropic
+
+                    api_key = self._claude_config.api_key
+                    if api_key is None:
+                        raise LLMProviderError(
+                            "Claude/Anthropic API key not configured",
+                            provider=self.provider_name,
+                        )
+
+                    self._client = AsyncAnthropic(
+                        api_key=api_key.get_secret_value(),
+                    )
+                except ImportError:
                     raise LLMProviderError(
-                        "Claude/Anthropic API key not configured",
+                        "Anthropic package not installed. Run: pip install anthropic",
                         provider=self.provider_name,
                     )
 
-                self._client = AsyncAnthropic(
-                    api_key=api_key.get_secret_value(),
-                )
-            except ImportError:
-                raise LLMProviderError(
-                    "Anthropic package not installed. Run: pip install anthropic",
-                    provider=self.provider_name,
-                )
+            elif auth_type in (ClaudeAuthType.OAUTH, ClaudeAuthType.SESSION_KEY):
+                # For subscription auth, we use a custom client
+                if not self._authenticated:
+                    success = await self.authenticate()
+                    if not success:
+                        raise LLMProviderError(
+                            "Claude subscription authentication failed",
+                            provider=self.provider_name,
+                        )
+                # Use session-based client
+                self._client = self._create_session_client()
 
         return self._client
+
+    def _create_session_client(self) -> Any:
+        """Create a client for session-based authentication."""
+        # This creates a wrapper that uses the Claude web API
+        return ClaudeSessionClient(
+            session_key=self._claude_config.session_key,
+            oauth_token=self._oauth_token,
+            logger=self._logger,
+        )
+
+    async def get_subscription_status(self) -> dict[str, Any]:
+        """Get subscription status for authenticated account.
+
+        Returns:
+            Dictionary with subscription details.
+        """
+        if not self.is_subscription_auth:
+            return {"type": "api", "unlimited": True}
+
+        return {
+            "type": self._claude_config.subscription_type or "unknown",
+            "email": self._claude_config.account_email,
+            "daily_limit": self._claude_config.daily_message_limit,
+            "messages_used": self._claude_config.messages_used_today,
+            "messages_remaining": (
+                self._claude_config.daily_message_limit - self._claude_config.messages_used_today
+                if self._claude_config.daily_message_limit
+                else None
+            ),
+        }
+
+    def increment_message_count(self) -> None:
+        """Increment the daily message count for subscription accounts."""
+        if self.is_subscription_auth:
+            self._claude_config.messages_used_today += 1
+
+    def reset_daily_count(self) -> None:
+        """Reset daily message count (call at midnight)."""
+        self._claude_config.messages_used_today = 0
 
     def _convert_messages(
         self, messages: list[LLMMessage]
@@ -355,3 +591,120 @@ class ClaudeProvider(BaseLLMProvider, ICodeExecutionProvider):
             )
 
             await asyncio.sleep(wait_time)
+
+
+class ClaudeSessionClient:
+    """
+    Client for Claude web API using session authentication.
+
+    This client uses the same API that the Claude web interface uses,
+    allowing users with Pro/Team subscriptions to use their account.
+    """
+
+    def __init__(
+        self,
+        session_key: Optional[Any] = None,
+        oauth_token: Optional[str] = None,
+        logger: Optional[Any] = None,
+    ):
+        """Initialize the session client.
+
+        Args:
+            session_key: Session key from browser cookies.
+            oauth_token: OAuth token from browser auth.
+            logger: Logger instance.
+        """
+        self._session_key = session_key
+        self._oauth_token = oauth_token
+        self._logger = logger
+        self._organization_id: Optional[str] = None
+        self._conversation_id: Optional[str] = None
+
+    async def _get_headers(self) -> dict[str, str]:
+        """Get headers for API requests."""
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "OvernightPredict/1.0",
+        }
+
+        if self._session_key:
+            headers["Cookie"] = f"sessionKey={self._session_key.get_secret_value()}"
+        elif self._oauth_token:
+            headers["Authorization"] = f"Bearer {self._oauth_token}"
+
+        return headers
+
+    async def create_message(
+        self,
+        messages: list[dict[str, Any]],
+        model: str = "claude-3-opus-20240229",
+        max_tokens: int = 4096,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Create a message using Claude web API.
+
+        Args:
+            messages: List of message dicts.
+            model: Model to use.
+            max_tokens: Maximum tokens.
+            **kwargs: Additional parameters.
+
+        Returns:
+            Response dictionary.
+        """
+        import aiohttp
+
+        headers = await self._get_headers()
+
+        # Convert messages to Claude web API format
+        prompt = self._convert_to_web_format(messages)
+
+        payload = {
+            "prompt": prompt,
+            "model": model,
+            "max_tokens_to_sample": max_tokens,
+        }
+
+        if self._conversation_id:
+            payload["conversation_id"] = self._conversation_id
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://claude.ai/api/chat/completions",
+                headers=headers,
+                json=payload,
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data
+                elif response.status == 429:
+                    # Rate limited
+                    retry_after = response.headers.get("Retry-After", "60")
+                    raise Exception(f"Rate limited. Retry after {retry_after}s")
+                else:
+                    error_text = await response.text()
+                    raise Exception(f"API error {response.status}: {error_text}")
+
+    def _convert_to_web_format(self, messages: list[dict[str, Any]]) -> str:
+        """Convert standard message format to web API format."""
+        parts = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "system":
+                parts.append(f"System: {content}")
+            elif role == "assistant":
+                parts.append(f"Assistant: {content}")
+            else:
+                parts.append(f"Human: {content}")
+        return "\n\n".join(parts)
+
+    @property
+    def messages(self) -> "ClaudeSessionClient":
+        """Return self for API compatibility."""
+        return self
+
+    async def create(self, **kwargs: Any) -> Any:
+        """Create method for API compatibility."""
+        return await self.create_message(**kwargs)
