@@ -266,9 +266,16 @@ def example_implementation():
             await asyncio.sleep(0.01)
 
 
-@lru_cache()
+_cached_ai_client: AIClient | None = None
+
+
 def get_ai_client(settings: Settings | None = None) -> AIClient:
     """Get the appropriate AI client based on settings."""
+    global _cached_ai_client
+
+    if _cached_ai_client is not None:
+        return _cached_ai_client
+
     if settings is None:
         from src.core.config import get_settings
         settings = get_settings()
@@ -276,14 +283,16 @@ def get_ai_client(settings: Settings | None = None) -> AIClient:
     provider = settings.ai.primary_provider.lower()
 
     if provider == "anthropic":
-        return AnthropicClient(settings)
+        _cached_ai_client = AnthropicClient(settings)
     elif provider == "openai":
-        return OpenAIClient(settings)
+        _cached_ai_client = OpenAIClient(settings)
     elif provider == "mock":
-        return MockAIClient(settings)
+        _cached_ai_client = MockAIClient(settings)
     else:
         logger.warning(
             "Unknown AI provider, using mock",
             provider=provider,
         )
-        return MockAIClient(settings)
+        _cached_ai_client = MockAIClient(settings)
+
+    return _cached_ai_client
