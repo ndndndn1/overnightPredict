@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from src.generators.answer import AnswerGenerator
     from src.generators.code import CodeGenerator
     from src.predictors.question import QuestionPredictor
+    from src.sessions.checkpoint import CheckpointManager
     from src.strategies.manager import StrategyManager
 
 logger = structlog.get_logger(__name__)
@@ -64,6 +65,7 @@ class OvernightEngine:
         accuracy_evaluator: "AccuracyEvaluator | None" = None,
         strategy_manager: "StrategyManager | None" = None,
         code_generator: "CodeGenerator | None" = None,
+        checkpoint_manager: "CheckpointManager | None" = None,
     ) -> None:
         """Initialize the overnight engine."""
         self.settings = settings or get_settings()
@@ -72,6 +74,7 @@ class OvernightEngine:
         self._accuracy_evaluator = accuracy_evaluator
         self._strategy_manager = strategy_manager
         self._code_generator = code_generator
+        self._checkpoint_manager = checkpoint_manager
 
         # State
         self._sessions: dict[str, SessionState] = {}
@@ -125,6 +128,14 @@ class OvernightEngine:
             from src.generators.code import CodeGenerator
             self._code_generator = CodeGenerator(self.settings)
         return self._code_generator
+
+    @property
+    def checkpoint_manager(self) -> "CheckpointManager":
+        """Get the checkpoint manager (lazy initialization)."""
+        if self._checkpoint_manager is None:
+            from src.sessions.checkpoint import CheckpointManager
+            self._checkpoint_manager = CheckpointManager()
+        return self._checkpoint_manager
 
     async def create_session(
         self,
@@ -539,12 +550,33 @@ class OvernightEngine:
     async def _checkpoint_session(self, session: SessionState) -> None:
         """Save session checkpoint for recovery."""
         session.checkpoint_version += 1
-        # In a real implementation, this would persist to storage
+
+        # Persist to storage using checkpoint manager
+        checkpoint_path = await self.checkpoint_manager.save_checkpoint(
+            session=session,
+            sync=False,  # Async save for performance
+        )
+
         logger.debug(
             "Session checkpointed",
             session_id=session.id,
             version=session.checkpoint_version,
+            path=checkpoint_path,
         )
+
+    async def recover_session(self, session_id: str) -> SessionState | None:
+        """Recover a session from the latest checkpoint."""
+        session = await self.checkpoint_manager.load_checkpoint(session_id)
+
+        if session:
+            self._sessions[session.id] = session
+            logger.info(
+                "Session recovered from checkpoint",
+                session_id=session.id,
+                version=session.checkpoint_version,
+            )
+
+        return session
 
     async def stop_session(self, session_id: str) -> None:
         """Stop a running session."""
