@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -12,10 +13,19 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+class AuthMethod(str, Enum):
+    """Authentication method for AI providers."""
+
+    API_KEY = "api_key"
+    SESSION_TOKEN = "session_token"
+    OAUTH = "oauth"
+
+
 class AIConfig(BaseModel):
     """AI provider configuration."""
 
     primary_provider: str = "anthropic"
+    auth_method: AuthMethod = AuthMethod.API_KEY
     anthropic_model: str = "claude-sonnet-4-20250514"
     anthropic_max_tokens: int = 8192
     anthropic_temperature: float = 0.7
@@ -112,9 +122,15 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Environment variables
+    # Environment variables - API Keys
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+
+    # Session-based authentication (for Claude subscription accounts)
+    anthropic_session_token: str = Field(default="", alias="ANTHROPIC_SESSION_TOKEN")
+    anthropic_session_key: str = Field(default="", alias="ANTHROPIC_SESSION_KEY")
+
+    # General settings
     database_url: str = Field(default="sqlite:///./data/overnight.db", alias="DATABASE_URL")
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
     secret_key: str = Field(default="dev-secret-key-change-in-production", alias="SECRET_KEY")

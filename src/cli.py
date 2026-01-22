@@ -10,11 +10,13 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.prompt import Prompt, Confirm
 from rich.table import Table
 
-from src.core.config import Settings, get_settings
+from src.core.config import AuthMethod, Settings, get_settings
 from src.core.models import ProjectContext
 from src.sessions.orchestrator import SessionOrchestrator
+from src.utils.ai_client import CredentialsManager
 from src.utils.logging import setup_logging
 
 app = typer.Typer(
@@ -262,19 +264,35 @@ def status() -> None:
 
     console.print(config_table)
 
-    # API key status
-    api_table = Table(title="API Keys")
+    # Authentication status
+    creds = CredentialsManager.load_credentials()
+
+    api_table = Table(title="Authentication")
     api_table.add_column("Provider", style="cyan")
+    api_table.add_column("Method", style="magenta")
     api_table.add_column("Status", style="green")
 
-    anthropic_status = "[green]✓ Configured[/green]" if settings.anthropic_api_key else "[red]✗ Not Set[/red]"
-    openai_status = "[green]✓ Configured[/green]" if settings.openai_api_key else "[red]✗ Not Set[/red]"
+    # Anthropic auth status
+    if settings.anthropic_api_key:
+        api_table.add_row("Anthropic", "API Key (env)", "[green]✓ Configured[/green]")
+    elif settings.anthropic_session_token:
+        api_table.add_row("Anthropic", "Session (env)", "[green]✓ Configured[/green]")
+    elif creds.get("anthropic_api_key"):
+        api_table.add_row("Anthropic", "API Key (stored)", "[green]✓ Configured[/green]")
+    elif creds.get("anthropic_session_token"):
+        api_table.add_row("Anthropic", "Session (stored)", "[green]✓ Configured[/green]")
+    else:
+        api_table.add_row("Anthropic", "-", "[red]✗ Not Set[/red]")
 
-    api_table.add_row("Anthropic", anthropic_status)
-    api_table.add_row("OpenAI", openai_status)
+    # OpenAI auth status
+    openai_status = "[green]✓ Configured[/green]" if settings.openai_api_key else "[red]✗ Not Set[/red]"
+    api_table.add_row("OpenAI", "API Key", openai_status)
 
     console.print()
     console.print(api_table)
+
+    console.print("\n[dim]Run 'overnight login' to configure authentication[/dim]")
+    console.print("[dim]Run 'overnight auth-status' for detailed auth info[/dim]")
 
 
 @app.command()
@@ -300,8 +318,234 @@ def init(
 
     console.print("[green]Created data directories[/green]")
     console.print("\n[yellow]Next steps:[/yellow]")
-    console.print("1. Edit .env and add your API keys")
+    console.print("1. Edit .env and add your API keys, or run 'overnight login' for session auth")
     console.print("2. Run 'overnight start' to begin coding")
+
+
+@app.command()
+def login(
+    method: str = typer.Option(
+        "session",
+        "--method", "-m",
+        help="Authentication method: 'api_key' or 'session'",
+    ),
+) -> None:
+    """Login to Claude with API key or session credentials."""
+    console.print(
+        Panel.fit(
+            "[bold blue]OvernightPredict Authentication[/bold blue]\n"
+            "Configure your Claude API credentials",
+            title="Login",
+        )
+    )
+
+    if method == "api_key":
+        _login_with_api_key()
+    elif method == "session":
+        _login_with_session()
+    else:
+        console.print(f"[red]Unknown method: {method}[/red]")
+        console.print("Use 'api_key' or 'session'")
+        raise typer.Exit(1)
+
+
+def _login_with_api_key() -> None:
+    """Login using API key."""
+    console.print("\n[cyan]API Key Authentication[/cyan]")
+    console.print("You can get an API key from: https://console.anthropic.com/\n")
+
+    api_key = Prompt.ask(
+        "Enter your Anthropic API key",
+        password=True,
+    )
+
+    if not api_key:
+        console.print("[red]API key cannot be empty[/red]")
+        raise typer.Exit(1)
+
+    # Validate API key format
+    if not api_key.startswith("sk-ant-"):
+        console.print("[yellow]Warning: API key doesn't match expected format (sk-ant-...)[/yellow]")
+        if not Confirm.ask("Continue anyway?"):
+            raise typer.Exit(1)
+
+    # Save to credentials
+    creds = CredentialsManager.load_credentials()
+    creds["anthropic_api_key"] = api_key
+    creds["auth_method"] = "api_key"
+    CredentialsManager.save_credentials(creds)
+
+    console.print("\n[green]✓ API key saved successfully![/green]")
+    console.print(f"Credentials stored at: {CredentialsManager.get_credentials_path()}")
+
+
+def _login_with_session() -> None:
+    """Login using Claude subscription session token."""
+    console.print("\n[cyan]Session Token Authentication[/cyan]")
+    console.print("Use your Claude subscription account credentials.\n")
+
+    console.print("[yellow]How to get your session token:[/yellow]")
+    console.print("1. Go to https://claude.ai and log in")
+    console.print("2. Open browser Developer Tools (F12)")
+    console.print("3. Go to Application > Cookies > claude.ai")
+    console.print("4. Copy the value of 'sessionKey' cookie\n")
+
+    session_token = Prompt.ask(
+        "Enter your session token (sessionKey cookie)",
+        password=True,
+    )
+
+    if not session_token:
+        console.print("[red]Session token cannot be empty[/red]")
+        raise typer.Exit(1)
+
+    # Optional: session key for additional auth
+    console.print("\n[dim]Optional: You can also provide an Organization ID if applicable[/dim]")
+    org_id = Prompt.ask(
+        "Organization ID (press Enter to skip)",
+        default="",
+    )
+
+    # Save to credentials
+    creds = CredentialsManager.load_credentials()
+    creds["anthropic_session_token"] = session_token
+    creds["auth_method"] = "session_token"
+    if org_id:
+        creds["anthropic_org_id"] = org_id
+    CredentialsManager.save_credentials(creds)
+
+    console.print("\n[green]✓ Session credentials saved successfully![/green]")
+    console.print(f"Credentials stored at: {CredentialsManager.get_credentials_path()}")
+
+    # Test connection
+    if Confirm.ask("\nTest connection now?", default=True):
+        asyncio.run(_test_session_connection())
+
+
+async def _test_session_connection() -> None:
+    """Test the session connection."""
+    from src.utils.ai_client import get_ai_client, clear_ai_client_cache
+
+    console.print("\n[cyan]Testing connection...[/cyan]")
+
+    try:
+        clear_ai_client_cache()
+        settings = get_settings()
+        # Force session auth
+        settings.ai.auth_method = AuthMethod.SESSION_TOKEN
+
+        client = get_ai_client(settings)
+        response = await client.generate(
+            "Say 'Hello' in one word.",
+            max_tokens=10,
+        )
+
+        console.print(f"[green]✓ Connection successful![/green]")
+        console.print(f"Response: {response}")
+
+    except Exception as e:
+        console.print(f"[red]✗ Connection failed: {e}[/red]")
+        console.print("\n[yellow]Please check your session token and try again.[/yellow]")
+
+
+@app.command()
+def logout() -> None:
+    """Clear stored credentials."""
+    console.print(
+        Panel.fit(
+            "[bold blue]OvernightPredict[/bold blue]\n"
+            "Clearing stored credentials",
+            title="Logout",
+        )
+    )
+
+    creds_path = CredentialsManager.get_credentials_path()
+
+    if not creds_path.exists():
+        console.print("[yellow]No stored credentials found.[/yellow]")
+        return
+
+    if Confirm.ask("Are you sure you want to clear all stored credentials?"):
+        CredentialsManager.clear_credentials()
+        console.print("[green]✓ Credentials cleared successfully![/green]")
+    else:
+        console.print("[yellow]Cancelled.[/yellow]")
+
+
+@app.command()
+def auth_status() -> None:
+    """Show current authentication status."""
+    console.print(
+        Panel.fit(
+            "[bold blue]OvernightPredict[/bold blue]\n"
+            "Authentication Status",
+            title="Auth Status",
+        )
+    )
+
+    settings = get_settings()
+    creds = CredentialsManager.load_credentials()
+
+    auth_table = Table(title="Authentication Configuration")
+    auth_table.add_column("Source", style="cyan")
+    auth_table.add_column("Type", style="magenta")
+    auth_table.add_column("Status", style="green")
+
+    # Check environment variables
+    if settings.anthropic_api_key:
+        auth_table.add_row(
+            "Environment",
+            "API Key",
+            "[green]✓ ANTHROPIC_API_KEY set[/green]",
+        )
+    else:
+        auth_table.add_row(
+            "Environment",
+            "API Key",
+            "[dim]Not set[/dim]",
+        )
+
+    if settings.anthropic_session_token:
+        auth_table.add_row(
+            "Environment",
+            "Session Token",
+            "[green]✓ ANTHROPIC_SESSION_TOKEN set[/green]",
+        )
+    else:
+        auth_table.add_row(
+            "Environment",
+            "Session Token",
+            "[dim]Not set[/dim]",
+        )
+
+    # Check stored credentials
+    if creds.get("anthropic_api_key"):
+        auth_table.add_row(
+            "Stored Credentials",
+            "API Key",
+            "[green]✓ Saved[/green]",
+        )
+
+    if creds.get("anthropic_session_token"):
+        auth_table.add_row(
+            "Stored Credentials",
+            "Session Token",
+            "[green]✓ Saved[/green]",
+        )
+
+    if not creds:
+        auth_table.add_row(
+            "Stored Credentials",
+            "-",
+            "[dim]No saved credentials[/dim]",
+        )
+
+    console.print(auth_table)
+
+    # Show active auth method
+    active_method = creds.get("auth_method", "api_key")
+    console.print(f"\n[cyan]Active method:[/cyan] {active_method}")
+    console.print(f"[cyan]Credentials file:[/cyan] {CredentialsManager.get_credentials_path()}")
 
 
 def main() -> None:

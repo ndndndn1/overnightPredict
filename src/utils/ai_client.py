@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from abc import ABC, abstractmethod
-from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
+import httpx
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from src.core.config import Settings
+from src.core.config import AuthMethod, Settings
 
 logger = structlog.get_logger(__name__)
+
+# Path to store session credentials
+CREDENTIALS_PATH = Path.home() / ".overnight" / "credentials.json"
 
 
 class AIClient(ABC):
@@ -43,18 +49,103 @@ class AIClient(ABC):
         pass
 
 
+class CredentialsManager:
+    """Manage stored credentials for session-based authentication."""
+
+    @staticmethod
+    def get_credentials_path() -> Path:
+        """Get the path to the credentials file."""
+        return CREDENTIALS_PATH
+
+    @staticmethod
+    def load_credentials() -> dict[str, Any]:
+        """Load stored credentials from file."""
+        creds_path = CredentialsManager.get_credentials_path()
+        if creds_path.exists():
+            try:
+                with open(creds_path) as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning("Failed to load credentials", error=str(e))
+        return {}
+
+    @staticmethod
+    def save_credentials(credentials: dict[str, Any]) -> None:
+        """Save credentials to file."""
+        creds_path = CredentialsManager.get_credentials_path()
+        creds_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Secure file permissions (owner read/write only)
+        with open(creds_path, "w") as f:
+            json.dump(credentials, f, indent=2)
+
+        try:
+            os.chmod(creds_path, 0o600)
+        except OSError:
+            pass  # Windows doesn't support chmod
+
+    @staticmethod
+    def clear_credentials() -> None:
+        """Clear stored credentials."""
+        creds_path = CredentialsManager.get_credentials_path()
+        if creds_path.exists():
+            creds_path.unlink()
+
+
 class AnthropicClient(AIClient):
-    """Anthropic Claude API client."""
+    """Anthropic Claude API client with multiple auth methods."""
+
+    # Claude.ai API endpoints for session-based auth
+    CLAUDE_API_BASE = "https://api.claude.ai"
 
     def __init__(self, settings: Settings) -> None:
         """Initialize the Anthropic client."""
         self.settings = settings
         self._client: Any = None
+        self._http_client: httpx.AsyncClient | None = None
+        self._auth_method = self._determine_auth_method()
+
+    def _determine_auth_method(self) -> AuthMethod:
+        """Determine the best available authentication method."""
+        # Check explicit setting first
+        if self.settings.ai.auth_method != AuthMethod.API_KEY:
+            return self.settings.ai.auth_method
+
+        # Auto-detect based on available credentials
+        if self.settings.anthropic_api_key:
+            return AuthMethod.API_KEY
+
+        if self.settings.anthropic_session_token or self.settings.anthropic_session_key:
+            return AuthMethod.SESSION_TOKEN
+
+        # Check stored credentials
+        creds = CredentialsManager.load_credentials()
+        if creds.get("anthropic_session_token"):
+            return AuthMethod.SESSION_TOKEN
+
+        return AuthMethod.API_KEY
+
+    def _get_session_credentials(self) -> tuple[str, str]:
+        """Get session credentials from settings or stored file."""
+        session_token = self.settings.anthropic_session_token
+        session_key = self.settings.anthropic_session_key
+
+        if not session_token:
+            creds = CredentialsManager.load_credentials()
+            session_token = creds.get("anthropic_session_token", "")
+            session_key = creds.get("anthropic_session_key", "")
+
+        return session_token, session_key
 
     @property
     def client(self) -> Any:
-        """Get the Anthropic client (lazy init)."""
+        """Get the Anthropic client (lazy init) - for API key auth."""
         if self._client is None:
+            if self._auth_method != AuthMethod.API_KEY:
+                raise ValueError(
+                    f"Cannot use SDK client with auth method: {self._auth_method}. "
+                    "Use generate() method directly."
+                )
             try:
                 import anthropic
                 self._client = anthropic.AsyncAnthropic(
@@ -63,6 +154,34 @@ class AnthropicClient(AIClient):
             except ImportError:
                 raise ImportError("anthropic package not installed")
         return self._client
+
+    async def _get_http_client(self) -> httpx.AsyncClient:
+        """Get HTTP client for session-based auth."""
+        if self._http_client is None:
+            session_token, session_key = self._get_session_credentials()
+
+            if not session_token:
+                raise ValueError(
+                    "Session token not configured. Run 'overnight login' to authenticate."
+                )
+
+            cookies = {"sessionKey": session_token}
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "OvernightPredict/1.0",
+            }
+
+            if session_key:
+                headers["Authorization"] = f"Bearer {session_key}"
+
+            self._http_client = httpx.AsyncClient(
+                base_url=self.CLAUDE_API_BASE,
+                cookies=cookies,
+                headers=headers,
+                timeout=120.0,
+            )
+        return self._http_client
 
     @retry(
         stop=stop_after_attempt(3),
@@ -80,6 +199,23 @@ class AnthropicClient(AIClient):
         max_tokens = max_tokens or self.settings.ai.anthropic_max_tokens
         temperature = temperature or self.settings.ai.anthropic_temperature
 
+        if self._auth_method == AuthMethod.API_KEY:
+            return await self._generate_with_api_key(
+                prompt, system_prompt, max_tokens, temperature
+            )
+        else:
+            return await self._generate_with_session(
+                prompt, system_prompt, max_tokens, temperature
+            )
+
+    async def _generate_with_api_key(
+        self,
+        prompt: str,
+        system_prompt: str | None,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
+        """Generate response using API key authentication."""
         messages = [{"role": "user", "content": prompt}]
 
         try:
@@ -96,6 +232,47 @@ class AnthropicClient(AIClient):
             logger.error("Anthropic API error", error=str(e))
             raise
 
+    async def _generate_with_session(
+        self,
+        prompt: str,
+        system_prompt: str | None,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
+        """Generate response using session-based authentication."""
+        http_client = await self._get_http_client()
+
+        # Build request payload for Claude.ai API
+        payload = {
+            "prompt": prompt,
+            "model": self.settings.ai.anthropic_model,
+            "max_tokens_to_sample": max_tokens,
+            "temperature": temperature,
+        }
+
+        if system_prompt:
+            payload["system"] = system_prompt
+
+        try:
+            response = await http_client.post(
+                "/api/append_message",
+                json=payload,
+            )
+            response.raise_for_status()
+
+            result = response.json()
+            return result.get("completion", result.get("content", ""))
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                logger.error(
+                    "Session expired or invalid. Run 'overnight login' to re-authenticate."
+                )
+            raise
+        except Exception as e:
+            logger.error("Claude session API error", error=str(e))
+            raise
+
     async def generate_stream(
         self,
         prompt: str,
@@ -108,6 +285,25 @@ class AnthropicClient(AIClient):
         max_tokens = max_tokens or self.settings.ai.anthropic_max_tokens
         temperature = temperature or self.settings.ai.anthropic_temperature
 
+        if self._auth_method == AuthMethod.API_KEY:
+            async for text in self._stream_with_api_key(
+                prompt, system_prompt, max_tokens, temperature
+            ):
+                yield text
+        else:
+            async for text in self._stream_with_session(
+                prompt, system_prompt, max_tokens, temperature
+            ):
+                yield text
+
+    async def _stream_with_api_key(
+        self,
+        prompt: str,
+        system_prompt: str | None,
+        max_tokens: int,
+        temperature: float,
+    ) -> Any:
+        """Stream response using API key authentication."""
         messages = [{"role": "user", "content": prompt}]
 
         async with self.client.messages.stream(
@@ -119,6 +315,56 @@ class AnthropicClient(AIClient):
         ) as stream:
             async for text in stream.text_stream:
                 yield text
+
+    async def _stream_with_session(
+        self,
+        prompt: str,
+        system_prompt: str | None,
+        max_tokens: int,
+        temperature: float,
+    ) -> Any:
+        """Stream response using session-based authentication."""
+        http_client = await self._get_http_client()
+
+        payload = {
+            "prompt": prompt,
+            "model": self.settings.ai.anthropic_model,
+            "max_tokens_to_sample": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+        }
+
+        if system_prompt:
+            payload["system"] = system_prompt
+
+        try:
+            async with http_client.stream(
+                "POST",
+                "/api/append_message",
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        if data and data != "[DONE]":
+                            try:
+                                chunk = json.loads(data)
+                                if "completion" in chunk:
+                                    yield chunk["completion"]
+                                elif "delta" in chunk:
+                                    yield chunk["delta"].get("text", "")
+                            except json.JSONDecodeError:
+                                continue
+        except Exception as e:
+            logger.error("Claude session stream error", error=str(e))
+            raise
+
+    async def close(self) -> None:
+        """Close HTTP client connection."""
+        if self._http_client:
+            await self._http_client.aclose()
+            self._http_client = None
 
 
 class OpenAIClient(AIClient):
@@ -269,6 +515,12 @@ def example_implementation():
 _cached_ai_client: AIClient | None = None
 
 
+def clear_ai_client_cache() -> None:
+    """Clear the cached AI client to pick up new credentials."""
+    global _cached_ai_client
+    _cached_ai_client = None
+
+
 def get_ai_client(settings: Settings | None = None) -> AIClient:
     """Get the appropriate AI client based on settings."""
     global _cached_ai_client
@@ -279,6 +531,14 @@ def get_ai_client(settings: Settings | None = None) -> AIClient:
     if settings is None:
         from src.core.config import get_settings
         settings = get_settings()
+
+    # Check for stored credentials if environment variables are not set
+    if not settings.anthropic_api_key and not settings.anthropic_session_token:
+        creds = CredentialsManager.load_credentials()
+        if creds.get("anthropic_api_key"):
+            settings.anthropic_api_key = creds["anthropic_api_key"]
+        if creds.get("anthropic_session_token"):
+            settings.anthropic_session_token = creds["anthropic_session_token"]
 
     provider = settings.ai.primary_provider.lower()
 
