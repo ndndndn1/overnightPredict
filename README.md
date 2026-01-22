@@ -58,6 +58,18 @@ pip install -e ".[dev]"
 
 ## 설정
 
+### 방법 1: CLI 로그인 (권장)
+
+```bash
+# API 키로 인증
+overnight login --method api_key
+
+# 또는 Claude 구독 계정으로 인증 (세션 토큰)
+overnight login --method session
+```
+
+### 방법 2: 환경 변수
+
 1. `.env` 파일 생성:
 ```bash
 cp .env.example .env
@@ -65,15 +77,38 @@ cp .env.example .env
 
 2. API 키 설정:
 ```env
+# API 키 인증
 ANTHROPIC_API_KEY=your_anthropic_api_key
 OPENAI_API_KEY=your_openai_api_key
+
+# 또는 세션 토큰 인증 (Claude 구독 계정)
+ANTHROPIC_SESSION_TOKEN=your_session_token
 ```
+
+### 인증 방법
+
+| 방법 | 설명 | 환경 변수 |
+|------|------|-----------|
+| API Key | Anthropic Console에서 발급받은 키 | `ANTHROPIC_API_KEY` |
+| Session Token | Claude.ai 구독 계정 세션 쿠키 | `ANTHROPIC_SESSION_TOKEN` |
+
+**세션 토큰 얻는 방법:**
+1. https://claude.ai 에 로그인
+2. 브라우저 개발자 도구 열기 (F12)
+3. Application → Cookies → claude.ai
+4. `sessionKey` 값 복사
 
 ## 사용법
 
 ### CLI 사용
 
 ```bash
+# 인증 설정
+overnight login                    # 세션 토큰으로 로그인 (기본)
+overnight login --method api_key   # API 키로 로그인
+overnight auth-status              # 인증 상태 확인
+overnight logout                   # 로그아웃
+
 # 밤샘 코딩 세션 시작
 overnight start --name "MyProject" \
     --component auth \
@@ -270,7 +305,16 @@ sessions:
 
 ai:
   primary_provider: anthropic  # AI 제공자
+  auth_method: api_key         # 인증 방법 (api_key, session_token)
 ```
+
+### 자격증명 저장 위치
+
+CLI를 통해 로그인하면 자격증명이 다음 경로에 저장됩니다:
+- Linux/macOS: `~/.overnight/credentials.json`
+- Windows: `%USERPROFILE%\.overnight\credentials.json`
+
+자격증명 파일은 소유자만 읽기/쓰기 가능한 권한(0600)으로 보호됩니다.
 
 ## 라이선스
 
