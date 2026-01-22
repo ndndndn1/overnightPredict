@@ -1,0 +1,121 @@
+# OvernightPredict Configuration
+# AI-powered autonomous code generation system
+
+app:
+  name: "OvernightPredict"
+  version: "1.0.0"
+  environment: "development"
+  debug: true
+
+# AI Model Configuration
+ai:
+  primary_provider: "anthropic"  # anthropic, openai
+  anthropic:
+    model: "claude-sonnet-4-20250514"
+    max_tokens: 8192
+    temperature: 0.7
+  openai:
+    model: "gpt-4-turbo"
+    max_tokens: 8192
+    temperature: 0.7
+
+  # Rate limiting
+  rate_limit:
+    requests_per_minute: 60
+    tokens_per_minute: 100000
+
+# Question Prediction Configuration
+prediction:
+  # Minimum accuracy threshold to keep predictions
+  accuracy_threshold: 0.7
+
+  # Number of questions to predict ahead
+  lookahead_count: 5
+
+  # Embedding model for semantic similarity
+  embedding_model: "all-MiniLM-L6-v2"
+
+  # Strategy adjustment parameters
+  strategy:
+    initial_strategy: "context_based"
+    available_strategies:
+      - "context_based"
+      - "pattern_matching"
+      - "semantic_similarity"
+      - "hybrid"
+    adaptation_rate: 0.1
+    min_samples_for_adjustment: 10
+
+# Session Management
+sessions:
+  max_parallel_sessions: 10
+  session_timeout_minutes: 60
+  checkpoint_interval_seconds: 30
+
+  # Auto-scaling
+  auto_scale:
+    enabled: true
+    min_sessions: 2
+    max_sessions: 20
+    scale_up_threshold: 0.8
+    scale_down_threshold: 0.3
+
+# Code Generation
+code_generation:
+  # Supported languages
+  languages:
+    - python
+    - typescript
+    - javascript
+    - go
+    - rust
+    - java
+
+  # Default project templates
+  default_template: "enterprise"
+
+  # Code quality checks
+  quality:
+    lint_on_generate: true
+    test_on_generate: true
+    security_scan: true
+
+# Storage Configuration
+storage:
+  database:
+    type: "sqlite"  # sqlite, postgresql
+    path: "./data/overnight.db"
+
+  cache:
+    type: "memory"  # memory, redis
+    redis_url: "redis://localhost:6379/0"
+    ttl_seconds: 3600
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "json"  # json, console
+  file:
+    enabled: true
+    path: "./logs/overnight.log"
+    rotation: "daily"
+    retention_days: 30
+
+# API Server Configuration
+api:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 4
+  cors:
+    enabled: true
+    origins:
+      - "http://localhost:3000"
+      - "http://localhost:8080"
+
+# Metrics and Monitoring
+metrics:
+  enabled: true
+  export_interval_seconds: 60
+  prometheus:
+    enabled: true
+    port: 9090
